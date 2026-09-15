@@ -1,0 +1,12 @@
+# Cliente HTTP
+# Biblioteca que faz as requisições HTTP 
+# (Baixa o HTML das páginas do G1)
+requests>=2.31.0
+
+# Parser HTML
+beautifulsoup4>=4.12.0  # Biblioteca que navega e extrai dados da árvore HTML
+soupsieve>=2.5          # Biblioteca que dá suporte a seletores CSS dentro do BeautifulSoup
+
+# Testes
+pytest>=8.0.0           # Framework de testes
+pytest-cov>=4.1.0       # Plugin para cobertura de testes
