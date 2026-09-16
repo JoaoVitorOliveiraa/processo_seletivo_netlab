@@ -1,13 +1,13 @@
 """
-Orquestração da coleta: paginação, deduplicação e sleep entre requisições.
+Orquestração da coleta: dispara o fetch paginado e aplica deduplicação.
 """
 
 from __future__ import annotations
 
 import logging
-import time
+
 from .client import can_fetch, fetch_page
-from .config import MAX_PAGES, SEARCH_URL, SLEEP_INTERVAL
+from .config import MAX_PAGES, SEARCH_URL
 from .models import Resultado
 from .parser import parse_page
 
@@ -17,68 +17,42 @@ logger = logging.getLogger(__name__)
 def collect(
     termo: str,
     max_pages: int = MAX_PAGES,
-    sleep_interval: float = SLEEP_INTERVAL,
 ) -> list[Resultado]:
     """
-    Coleta todas as páginas de resultados para um termo, com deduplicação.
-    A deduplicação usa a chave (url, titulo) — não só URL — para preservar
-    atualizações legítimas de uma mesma notícia.
+    Coleta os resultados da busca pelo termo informado.
 
-    Encerra automaticamente quando:
-    - atinge max_pages;
-    - uma página retorna None (redirecionamento ou erro);
-    - uma página não traz nenhum resultado novo.
+    A paginação é feita clicando em "Veja mais" no navegador
+    (o G1 não expõe mais paginação via URL). O parâmetro `max_pages`
+    define quantas vezes o botão é clicado.
     """
-    
-    seen_keys: set[tuple[str, str]] = set()
-    all_results: list[Resultado] = []
+    # Monta a URL (a página 1 é a URL "limpa"; a paginação é feita no browser)
+    url = f"{SEARCH_URL}?q={termo}"
 
-    # Respeita robots.txt antes de qualquer coisa
-    if not can_fetch(SEARCH_URL):
-        logger.error("robots.txt proíbe a coleta de %s. Abortando.", SEARCH_URL)
+    # Respeita robots.txt
+    if not can_fetch(url):
+        logger.error("robots.txt proíbe a coleta de %s. Abortando.", url)
         return []
 
-    for page in range(1, max_pages + 1):
-    # Página 1 usa URL "limpa" (sem parâmetro page).
-    # Páginas 2+ usam ?q=...&page=N.
-    # O G1 rejeita ?page=1 com uma página vazia.
-        if page == 1:
-            url = f"{SEARCH_URL}?q={termo}"
-        else:
-            url = f"{SEARCH_URL}?q={termo}&page={page}"
+    # Baixa o HTML com todas as páginas acumuladas
+    html = fetch_page(url, pages=max_pages)
+    if html is None:
+        logger.error("Falha ao baixar %s.", url)
+        return []
 
-        logger.info("Coletando página %d: %s", page, url)
+    # Parseia — todos os cards vêm em um único HTML agora
+    results = parse_page(html, page_num=1, termo=termo)
 
-        if not can_fetch(url):
-            logger.warning("robots.txt proíbe %s. Pulando.", url)
-            continue
+    # Deduplica (o G1 pode repetir entre cliques do "Veja mais")
+    seen: set[tuple[str, str]] = set()
+    unique: list[Resultado] = []
+    for r in results:
+        key = (r.url, r.titulo)
+        if key not in seen:
+            seen.add(key)
+            unique.append(r)
 
-        html = fetch_page(url)
-        if html is None:
-            logger.info("Encerrando paginação na página %d.", page)
-            break
-
-        page_results = parse_page(html, page, termo)
-
-        # Filtra duplicados
-        new_results = []
-        for r in page_results:
-            key = (r.url, r.titulo)
-            if key not in seen_keys:
-                seen_keys.add(key)
-                new_results.append(r)
-
-        if not new_results:
-            logger.info("Nenhum resultado novo na página %d. Encerrando.", page)
-            break
-
-        all_results.extend(new_results)
-        logger.info(
-            "Página %d: %d novos (total: %d).",
-            page, len(new_results), len(all_results),
-        )
-
-        # Pausa entre requisições (etiqueta para com o servidor)
-        time.sleep(sleep_interval)
-
-    return all_results
+    logger.info(
+        "Coleta concluída: %d resultados únicos (%d brutos).",
+        len(unique), len(results),
+    )
+    return unique
