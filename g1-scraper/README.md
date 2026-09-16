@@ -29,10 +29,28 @@ resultados, nenhum resultado, ou registros com campos incompletos.
 
 ### Causa Raiz
 
-**Os seletores HTML estavam desatualizados.** A rotina buscava
-`div.resultado`, `div.titulo`, `p.resumo` e `span.data` — classes que
-**não existem mais** na página atual do G1. O G1 migrou para uma nova
-estrutura baseada em classes com prefixo `feed-post-*`.
+**Dois problemas independentes** fazem a rotina original falhar silenciosamente:
+
+**1. Seletores obsoletos.** O código original buscava `div.resultado`,
+`div.titulo`, `p.resumo` e `span.data` — classes que **não existem mais**
+na página atual do G1. Após inspeção manual do HTML real (via DevTools),
+os seletores corretos foram identificados como pertencentes ao framework
+`widget--info__*`:
+
+| Campo     | Seletor atual                   |
+| --------- | ------------------------------- |
+| Container | `li[id^='search-result-item-']` |
+| Título    | `div.widget--info__title`       |
+| Resumo    | `p.widget--info__description`   |
+| Veículo   | `div.widget--info__header`      |
+| Data      | `div.widget--info__meta > span` |
+
+**2. URLs de tracking.** Todos os links do G1 são envolvidos por um wrapper
+de redirecionamento (`https://measures.globo.com/v1/click?...&u=<URL_REAL>`).
+A URL real está **URL-encoded** no parâmetro `u=`. Sem decodificá-la, o
+CSV resultante fica cheio de URLs inúteis e a métrica de precisão HTTP
+falha (o domínio `measures.globo.com` exige autenticação). O scraper
+corrigido decodifica esse parâmetro automaticamente.
 
 Como `soup.find_all("div", class_="resultado")` simplesmente retorna
 **lista vazia** quando nada casa, o código segue sem erro até o final,
@@ -50,6 +68,7 @@ produzindo zero resultados.
 | 6   | Sem `User-Agent`                          | Pode ser bloqueado pelo G1          |
 | 7   | `TOTAL_PAGINAS` fixo sem detecção de fim  | Requisições desnecessárias          |
 | 8   | Logs via `print`                          | Difícil diagnosticar em produção    |
+| 9   | URLs de tracking não decodificadas        | CSV com links inúteis               |
 
 ---
 
@@ -58,7 +77,9 @@ produzindo zero resultados.
 ### 2.1 Correções Principais
 
 - **Seletores atualizados** e centralizados em `src/g1_scraper/config.py`,
-  com **fallbacks em cascata** (múltiplos seletores separados por vírgula).
+  extraídos do **HTML real do G1** via inspeção manual (DevTools).
+- **Decodificação de URLs de tracking** — extrai a URL real do parâmetro
+  `u=` do wrapper `measures.globo.com`.
 - **Deduplicação** por chave `(url, titulo)` — preserva atualizações
   legítimas da mesma notícia.
 - **Tratamento de erros** em três níveis: por requisição (retry + backoff),
@@ -69,6 +90,8 @@ produzindo zero resultados.
   não traz resultados novos.
 - **Datas normalizadas** para ISO 8601 (converte "há 2 horas", "ontem",
   "10/01/2025 14h30" para um formato único).
+- **Alerta de drift parcial** — o `run.py` avisa quando a cobertura de
+  campos opcionais cai abaixo de 50%.
 - **Logging estruturado** (console + arquivo rotativo de 5 MB × 4).
 - **Respeita `robots.txt`** antes de cada requisição.
 
@@ -76,16 +99,16 @@ produzindo zero resultados.
 
 Cada módulo tem **uma única responsabilidade**:
 
-| Módulo          | Responsabilidade                                       |
-| --------------- | ------------------------------------------------------ |
-| `config.py`     | Constantes (URLs, seletores, headers, limites, schema) |
-| `models.py`     | Dataclass `Resultado` (tipagem + `to_dict`)            |
-| `client.py`     | HTTP: fetch, retry, backoff, robots.txt                |
-| `parser.py`     | HTML → `Resultado` + normalização de datas             |
-| `scraper.py`    | Orquestração: paginação + dedup + sleep                |
-| `quality.py`    | Métricas de qualidade                                  |
-| `exporters.py`  | Persistência em JSON e CSV                             |
-| `llm_helper.py` | Proposta de integração com LLM                         |
+| Módulo          | Responsabilidade                                                |
+| --------------- | --------------------------------------------------------------- |
+| `config.py`     | Constantes (URLs, seletores, headers, limites, schema)          |
+| `models.py`     | Dataclass `Resultado` (tipagem + `to_dict`)                     |
+| `client.py`     | HTTP: fetch, retry, backoff, robots.txt                         |
+| `parser.py`     | HTML → `Resultado` + normalização de datas + decode de tracking |
+| `scraper.py`    | Orquestração: paginação + dedup + sleep                         |
+| `quality.py`    | Métricas de qualidade                                           |
+| `exporters.py`  | Persistência em JSON e CSV                                      |
+| `llm_helper.py` | Proposta de integração com LLM                                  |
 
 ---
 
@@ -148,8 +171,18 @@ python run.py --help
 
 ### Campos Coletados
 
-`titulo`, `url`, `resumo`, `data_publicacao_raw`, `data_publicacao_iso`,
-`pagina`, `termo_busca`, `coletado_em`.
+| Campo                 | Descrição                                      |
+| --------------------- | ---------------------------------------------- |
+| `titulo`              | Título da notícia                              |
+| `url`                 | URL real da notícia (decodificada do tracking) |
+| `resumo`              | Primeiras linhas do conteúdo                   |
+| `veiculo`             | Veículo emissor (ex.: "G1", "MGTV 1ª Edição")  |
+| `data_publicacao_raw` | Data no formato exibido na página              |
+| `data_publicacao_iso` | Data normalizada para ISO 8601                 |
+| `publicitario`        | `true` se o card é patrocinado                 |
+| `pagina`              | Página de onde veio o resultado                |
+| `termo_busca`         | Termo usado na busca                           |
+| `coletado_em`         | Timestamp da coleta                            |
 
 ---
 
@@ -168,7 +201,7 @@ pytest tests/test_parser.py -v
 
 A suíte cobre:
 
-- **`test_parser.py`** — Parsing de HTML + Normalização de datas
+- **`test_parser.py`** — Parsing de HTML + Decodificação de URLs + Normalização de datas
 - **`test_scraper.py`** — Orquestração + Deduplicação
 - **`test_quality.py`** — Métricas de qualidade
 - **`test_exporters.py`** — JSON e CSV
@@ -183,10 +216,10 @@ do G1, garantindo que os testes reflitam o cenário real.
 
 ### Metodologia
 
-Construímos uma **amostra de referência** (ground truth) selecionada
-manualmente da primeira página do G1, salva em
-`data/reference/reference_lgpd.json`. Comparamos essa amostra com os
-dados produzidos pelo scraper.
+Construímos uma **amostra de referência** (ground truth) com **16 registros
+únicos** selecionados manualmente das páginas 1 e 2 do G1, salva em
+`data/reference/reference_lgpd.json`. Comparamos essa amostra com os dados
+produzidos pelo scraper.
 
 ### Dimensões Avaliadas
 
@@ -238,6 +271,13 @@ e revisão humana.
 | **Monitoramento**     | Comparar HTML atual com snapshot anterior | Job diário (cron)                       |
 | **Geração de testes** | Propor casos para novos cenários          | PR que altera `SELECTORS`               |
 
+> **Gatilho já implementado:** o `run.py` loga os seletores ativos no início
+> da execução e emite um `WARNING` automático quando a cobertura de campos
+> opcionais (resumo, data, veículo) cai abaixo de 50%. Esse alerta funciona
+> como ponto de entrada para o pipeline de diagnóstico via LLM descrito
+> abaixo — nenhuma chamada de API é feita automaticamente; o alerta
+> sinaliza que uma análise manual ou assistida é recomendada.
+
 ### 7.2 Dados Fornecidos
 
 **Enviado:** trecho de 8 KB do HTML, dict de seletores atuais, últimas 20
@@ -248,8 +288,6 @@ integral das notícias.
 
 ### 7.3 Pipeline de Validação
 
-### 7.3 Pipeline de validação
-
 1. **LLM sugere seletores** — Com evidência textual do HTML
 2. **Parse JSON** — Descarta a resposta se não for JSON válido
 3. **Valida CSS** — Verifica a sintaxe com `soupsieve`
@@ -259,10 +297,6 @@ integral das notícias.
 
 **Fallback:** Se qualquer etapa falhar, mantém os seletores atuais e
 dispara um alerta.
-
-Um seletor só é aprovado se: (a) for CSS válido, (b) encontrar ≥ 1
-elemento no HTML, (c) extrair o campo esperado, (d) não introduzir falsos
-positivos.
 
 ### 7.4 Anti-Alucinação
 
@@ -294,6 +328,8 @@ A LLM **nunca está no caminho crítico** da coleta.
 - **Acurácia < 100%** por reordenação de resultados entre coletas.
 - **Sem verificação de conteúdo** — comparamos URLs, não o texto integral
   dos títulos.
+- **URLs de tracking** podem expirar — a decodificação extrai a URL real,
+  mas o wrapper pode mudar de formato no futuro.
 
 ### Melhorias Futuras
 
