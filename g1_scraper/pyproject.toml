@@ -1,0 +1,24 @@
+# Metadados do projeto — permite instalar com `pip install -e .`
+[project]
+name = "g1-scraper"             # Nome do pacote no PyPI.
+version = "0.1.0"               # Versão atual do projeto.
+description = "Rotina de web scraping dos resultados de busca do G1 (NetLab UFRJ)"
+requires-python = ">=3.10"      # Versões do Python suportadas.
+dependencies = [                # Dependências de produção.
+    "requests>=2.31.0",
+    "beautifulsoup4>=4.12.0",
+    "soupsieve>=2.5",
+]
+
+# Configuração do pytest para que ele encontre o pacote `src`
+[tool.pytest.ini_options]
+pythonpath = ["src"]            # Adiciona a pasta src/ ao sys.path durante a execução dos testes.
+testpaths = ["tests"]           # Onde estão localizados os testes.
+addopts = "-v --tb=short"       # Adiciona flags padrão a toda execução do pytest.
+
+# Configuração do build (setuptools encontra o pacote dentro de src/)
+[build-system]
+requires = ["setuptools>=68"]               # Lista as ferramentas necessárias para fazer o build.
+build-backend = "setuptools.build_meta"     # Especifica qual módulo Python o pip deve chamar para executar o build.
+[tool.setuptools.packages.find]             # Diz ao setuptools onde procurar os pacotes Python do projeto.
+where = ["src"]                             # O setuptools olha dentro de src/ e encontra g1_scraper/.
