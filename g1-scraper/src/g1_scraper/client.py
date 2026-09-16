@@ -24,20 +24,41 @@ _robots_cache: RobotFileParser | None = None
 
 def _get_robots() -> RobotFileParser:
     """
-    Lê robots.txt uma única vez e mantém em cache. Se falhar, assume
-    que tudo é permitido (fallback permissivo) — o ideal é registrar
-    isso no log para o operador saber.
-    """
+    Lê o robots.txt uma única vez e mantém em cache.
 
+    O G1 serve o robots.txt com Content-Encoding: gzip, o que quebra o
+    parser nativo do Python (ele não descomprime automaticamente). Por
+    isso, baixamos com `requests` (que descomprime) e parseamos o texto
+    manualmente via `parse()`.
+
+    Se a leitura falhar por qualquer motivo, retornamos um parser
+    explicitamente permissivo — nunca um vazio, que bloquearia tudo.
+    """
     global _robots_cache
-    if _robots_cache is None:
-        rp = RobotFileParser()
-        rp.set_url(ROBOTS_URL)
-        try:
-            rp.read()
-        except Exception as e:
-            logger.warning("Não foi possível ler robots.txt (%s). Assumindo permissão.", e)
-        _robots_cache = rp
+    if _robots_cache is not None:
+        return _robots_cache
+
+    rp = RobotFileParser()
+    rp.set_url(ROBOTS_URL)
+
+    try:
+        # `requests` lida com gzip/deflate/br automaticamente.
+        resp = requests.get(ROBOTS_URL, headers=HEADERS, timeout=TIMEOUT)
+        resp.raise_for_status()
+        # `parse()` espera uma lista de linhas (sem o \n).
+        rp.parse(resp.text.splitlines())
+        logger.info("robots.txt carregado com sucesso de %s.", ROBOTS_URL)
+
+    except Exception as e:
+        # Fallback explícito: libera tudo. O aviso é honesto agora —
+        # o comportamento real bate com a mensagem do log.
+        logger.warning(
+            "Falha ao ler robots.txt (%s). Modo permissivo ativado.", e
+        )
+        # Truque: alimenta o parser com uma regra que libera tudo.
+        rp.parse(["User-agent: *", "Disallow:"])
+
+    _robots_cache = rp
     return _robots_cache
 
 
