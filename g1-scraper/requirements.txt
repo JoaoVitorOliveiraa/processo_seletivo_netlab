@@ -9,6 +9,7 @@ soupsieve>=2.5          # Biblioteca que dá suporte a seletores CSS dentro do B
 
 # Renderização de páginas com JavaScript (usado em client.py)
 playwright>=1.40.0
+greenlet>=3.1.0
 
 # Testes
 pytest>=8.0.0           # Framework de testes
