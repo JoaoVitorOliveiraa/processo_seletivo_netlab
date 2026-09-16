@@ -1,13 +1,12 @@
 """
-Camada HTTP: baixa páginas, trata erros e respeita robots.txt.
+Camada HTTP: baixa páginas do G1 usando Playwright e respeita robots.txt.
 
-Usa Playwright (navegador headless) porque a página de busca do G1 é
-renderizada via JavaScript — o HTML inicial retornado por `requests`
-não contém os cards de resultado. O Playwright executa o JS e devolve
-o DOM já renderizado, que é então parseado com Beautiful Soup.
+O G1 renderiza a busca via JavaScript E usa um botão "Veja mais" para
+paginação (não há parâmetro de URL para navegar entre páginas — testamos
+`page`, `from`, `offset`, `start`, `p`, `pagina` e todos são ignorados).
 
-O `robots.txt` continua sendo lido com `requests` (arquivo estático,
-não precisa de JS). O fallback é permissivo e explícito.
+Solução: o Playwright abre a página, clica no botão "Veja mais" N vezes,
+e devolve o HTML acumulado. O parsing continua com Beautiful Soup.
 """
 from __future__ import annotations
 
@@ -24,18 +23,19 @@ logger = logging.getLogger(__name__)
 
 _robots_cache: RobotFileParser | None = None
 
+# Seletor do botão "Veja mais"
+SELETOR_BOTAO = "button.pagination__load-more"
+
+# Seletor dos cards
+SELETOR_CARDS = "li[id^='search-result-item-']"
+
 
 # ---------------------------------------------------------------------------
 # robots.txt
 # ---------------------------------------------------------------------------
 
 def _get_robots() -> RobotFileParser:
-    """
-    Lê o robots.txt uma única vez e mantém em cache.
-
-    Usa `requests` porque o G1 serve o arquivo com Content-Encoding: gzip,
-    e o `RobotFileParser.read()` nativo não descomprime.
-    """
+    """Lê o robots.txt uma única vez e mantém em cache."""
     global _robots_cache
     if _robots_cache is not None:
         return _robots_cache
@@ -49,8 +49,6 @@ def _get_robots() -> RobotFileParser:
         rp.parse(resp.text.splitlines())
         logger.info("robots.txt carregado com sucesso.")
     except Exception as e:
-        # Fallback explícito e permissivo — nunca um parser vazio,
-        # que bloquearia tudo silenciosamente.
         logger.warning("Falha ao ler robots.txt (%s). Modo permissivo.", e)
         rp.parse(["User-agent: *", "Disallow:"])
 
@@ -70,13 +68,13 @@ def can_fetch(url: str, user_agent: str = "*") -> bool:
 # Renderização com Playwright
 # ---------------------------------------------------------------------------
 
-def _render_with_playwright(url: str) -> str | None:
+def _render_with_pagination(url: str, pages: int) -> str | None:
     """
-    Abre a URL num Chromium headless e devolve o HTML após o JS rodar.
+    Abre a URL, clica em "Veja mais" (pages - 1) vezes, e devolve o HTML.
 
-    Aguarda explicitamente pelos cards (`li[id^='search-result-item-']`)
-    antes de capturar o HTML — sem isso, o snapshot pega a página no
-    meio do carregamento e o parser encontraria zero resultados.
+    O botão é clicado repetidamente até:
+    - atingir o número de páginas solicitado;
+    - ou o botão desaparecer (fim dos resultados).
     """
     try:
         with sync_playwright() as p:
@@ -87,27 +85,58 @@ def _render_with_playwright(url: str) -> str | None:
             )
             page = context.new_page()
 
+            # Bloqueia recursos pesados que não afetam o parser
+            page.route(
+                "**/*.{png,jpg,jpeg,gif,svg,webp,css,woff,woff2,ttf}",
+                lambda route: route.abort(),
+            )
+
             try:
                 page.goto(url, timeout=TIMEOUT * 1000, wait_until="domcontentloaded")
 
-                # Bloqueia imagens/CSS/fonts — não são necessários para o parser
-                # e aceleram o carregamento.
-                page.route(
-                    "**/*.{png,jpg,jpeg,gif,svg,webp,css,woff,woff2,ttf}",
-                    lambda route: route.abort(),
-                )
+                # Aguarda os primeiros cards
+                page.wait_for_selector(SELETOR_CARDS, timeout=15_000)
 
-                # Aguarda os cards aparecerem.
-                page.wait_for_selector(
-                    "li[id^='search-result-item-']",
-                    timeout=15_000,
-                )
+                # Clica em "Veja mais" (pages - 1) vezes
+                for i in range(pages - 1):
+                    # Conta cards antes do clique
+                    antes = len(page.query_selector_all(SELETOR_CARDS))
+
+                    # Localiza o botão
+                    botao = page.query_selector(SELETOR_BOTAO)
+                    if not botao:
+                        logger.info(
+                            "Botão 'Veja mais' não encontrado — fim dos resultados "
+                            "após %d página(s).",
+                            i + 1,
+                        )
+                        break
+
+                    # Rola até o botão e clica
+                    botao.scroll_into_view_if_needed()
+                    botao.click()
+                    logger.debug("Clique %d em 'Veja mais' (antes: %d cards).", i + 1, antes)
+
+                    # Aguarda o número de cards aumentar
+                    try:
+                        page.wait_for_function(
+                            f"document.querySelectorAll('{SELETOR_CARDS}').length > {antes}",
+                            timeout=10_000,
+                        )
+                        depois = len(page.query_selector_all(SELETOR_CARDS))
+                        logger.info("Página %d carregada: %d → %d cards.", i + 2, antes, depois)
+                    except PlaywrightTimeout:
+                        logger.warning(
+                            "Timeout aguardando mais cards após o clique %d. "
+                            "Parando paginação.",
+                            i + 1,
+                        )
+                        break
+
                 return page.content()
 
             except PlaywrightTimeout:
-                # Pode ser fim de paginação ou layout mudado.
-                # Devolve o HTML — o parser decide o que fazer.
-                logger.warning("Timeout aguardando cards em %s.", url)
+                logger.warning("Timeout aguardando cards iniciais em %s.", url)
                 return page.content()
 
             finally:
@@ -123,48 +152,19 @@ def _render_with_playwright(url: str) -> str | None:
 # Ponto de entrada público
 # ---------------------------------------------------------------------------
 
-def fetch_page(
-    url: str,
-    retries: int = RETRIES,
-    backoff: float = BACKOFF_BASE,
-) -> str | None:
+def fetch_page(url: str, pages: int = 1) -> str | None:
     """
-    Baixa o HTML renderizado de uma URL, com retentativas e backoff.
+    Baixa o HTML renderizado de uma URL do G1, com paginação via clique.
+
+    Parâmetros:
+        url:   URL de busca (ex.: https://g1.globo.com/busca/?q=lgpd)
+        pages: Quantas vezes considerar a paginação. `pages=1` devolve
+               só a primeira leva; `pages=3` clica em "Veja mais" 2 vezes,
+               acumulando ~30 cards.
 
     Retorna:
-        str  → HTML já com o resultado do JavaScript (os cards existem).
-        None → se todas as tentativas falharem ou houver redirecionamento
-               para a página 1 (sinal de fim da paginação).
+        str  → HTML renderizado com todos os cards acumulados.
+        None → em caso de erro persistente.
     """
-    for attempt in range(1, retries + 1):
-        try:
-            # Detecta redirecionamentos antes de abrir o navegador
-            # (o G1 manda de volta para page=1 quando se excede o limite).
-            resp = requests.head(
-                url, headers=HEADERS, timeout=TIMEOUT, allow_redirects=False
-            )
-
-            if resp.status_code in (301, 302, 303, 307, 308):
-                location = resp.headers.get("Location", "?")
-                logger.info("Redirecionamento em %s → %s. Fim da paginação.", url, location)
-                return None
-
-            html = _render_with_playwright(url)
-            if html:
-                return html
-
-        except requests.Timeout:
-            logger.warning("Timeout (tentativa %d/%d) em %s", attempt, retries, url)
-        except requests.HTTPError as e:
-            status = e.response.status_code if e.response is not None else None
-            logger.error("HTTP %s em %s", status, url)
-            if status is not None and 400 <= status < 500:
-                return None
-        except requests.RequestException as e:
-            logger.error("Erro de conexão em %s: %s", url, e)
-
-        if attempt < retries:
-            time.sleep(backoff ** attempt)
-
-    logger.error("Falha definitiva ao baixar %s após %d tentativas.", url, retries)
-    return None
+    logger.info("Coletando %s (pages=%d)", url, pages)
+    return _render_with_pagination(url, pages)
