@@ -39,7 +39,14 @@ def collect(
         return []
 
     for page in range(1, max_pages + 1):
-        url = f"{SEARCH_URL}?q={termo}&page={page}"
+    # Página 1 usa URL "limpa" (sem parâmetro page).
+    # Páginas 2+ usam ?q=...&page=N.
+    # O G1 rejeita ?page=1 com uma página vazia.
+        if page == 1:
+            url = f"{SEARCH_URL}?q={termo}"
+        else:
+            url = f"{SEARCH_URL}?q={termo}&page={page}"
+
         logger.info("Coletando página %d: %s", page, url)
 
         if not can_fetch(url):
