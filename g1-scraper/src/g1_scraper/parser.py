@@ -18,7 +18,13 @@ from .models import Resultado
 logger = logging.getLogger(__name__)
 
 _RELATIVE_RE = re.compile(r"há\s+(\d+)\s+(minuto|hora|dia|semana|m[êe]s|ano)s?", re.IGNORECASE)
-_ABSOLUTE_RE = re.compile(r"(\d{2})/(\d{2})/(\d{4})\s+(\d{2})h(\d{2})")
+
+# Casa com ambos os formatos observados no G1:
+# - "25/08/2026 16:27"  (layout atual — dois pontos)
+# - "10/01/2025 14h30"  (layout antigo — letra h)
+_ABSOLUTE_RE = re.compile(
+    r"(\d{2})/(\d{2})/(\d{4})\s+(\d{2})[h:](\d{2})"
+)
 
 _DELTAS = {
     "minuto": lambda n: timedelta(minutes=n),
