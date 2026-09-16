@@ -1,0 +1,27 @@
+# Bytecode Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Ambientes virtuais
+.venv/
+venv/
+
+# Dados brutos e resultados (não versionar — regeneráveis)
+data/raw/*
+data/output/*
+!data/raw/.gitkeep
+!data/output/.gitkeep
+
+# Logs
+logs/*.log
+logs/*.log.*
+
+# Testes / cobertura
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
