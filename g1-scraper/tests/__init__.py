@@ -1,0 +1,1 @@
+# Marca "tests" como pacote importável para o pytest.
