@@ -72,9 +72,9 @@ def _render_with_pagination(url: str, pages: int) -> str | None:
     """
     Abre a URL, clica em "Veja mais" (pages - 1) vezes, e devolve o HTML.
 
-    O botão é clicado repetidamente até:
-    - atingir o número de páginas solicitado;
-    - ou o botão desaparecer (fim dos resultados).
+    Aguarda novos cards usando o ID sequencial (`#search-result-item-N`)
+    em vez de `wait_for_function` — evita o conflito de aspas simples no
+    seletor CSS que quebrava o JavaScript interno do Playwright.
     """
     try:
         with sync_playwright() as p:
@@ -96,13 +96,13 @@ def _render_with_pagination(url: str, pages: int) -> str | None:
 
                 # Aguarda os primeiros cards
                 page.wait_for_selector(SELETOR_CARDS, timeout=15_000)
+                total_inicial = len(page.query_selector_all(SELETOR_CARDS))
+                logger.info("Página 1 carregada: %d cards.", total_inicial)
 
                 # Clica em "Veja mais" (pages - 1) vezes
                 for i in range(pages - 1):
-                    # Conta cards antes do clique
                     antes = len(page.query_selector_all(SELETOR_CARDS))
 
-                    # Localiza o botão
                     botao = page.query_selector(SELETOR_BOTAO)
                     if not botao:
                         logger.info(
@@ -112,19 +112,22 @@ def _render_with_pagination(url: str, pages: int) -> str | None:
                         )
                         break
 
-                    # Rola até o botão e clica
                     botao.scroll_into_view_if_needed()
                     botao.click()
                     logger.debug("Clique %d em 'Veja mais' (antes: %d cards).", i + 1, antes)
 
-                    # Aguarda o número de cards aumentar
+                    # Espera o card de número (antes + 1) aparecer.
+                    # Usar o ID sequencial evita interpolar CSS no JavaScript.
                     try:
-                        page.wait_for_function(
-                            f"document.querySelectorAll('{SELETOR_CARDS}').length > {antes}",
+                        page.wait_for_selector(
+                            f"li#search-result-item-{antes + 1}",
                             timeout=10_000,
                         )
                         depois = len(page.query_selector_all(SELETOR_CARDS))
-                        logger.info("Página %d carregada: %d → %d cards.", i + 2, antes, depois)
+                        logger.info(
+                            "Página %d carregada: %d → %d cards.",
+                            i + 2, antes, depois,
+                        )
                     except PlaywrightTimeout:
                         logger.warning(
                             "Timeout aguardando mais cards após o clique %d. "
@@ -146,7 +149,6 @@ def _render_with_pagination(url: str, pages: int) -> str | None:
     except Exception as e:
         logger.error("Falha no Playwright em %s: %s", url, e)
         return None
-
 
 # ---------------------------------------------------------------------------
 # Ponto de entrada público
