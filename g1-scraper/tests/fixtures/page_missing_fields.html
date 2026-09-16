@@ -1,0 +1,111 @@
+<!--
+  Fixture de teste: cenários de CAMPOS AUSENTES e CARDS INVÁLIDOS.
+
+  O objetivo é validar que o parser:
+  1. NÃO quebra quando um campo opcional falta (resumo, data, veículo).
+  2. IGNORA silenciosamente cards que não são resultados válidos.
+  3. Aceita cards parcialmente preenchidos (só título + link).
+
+  Cada <li> abaixo exercita um cenário específico. Os comentários
+  dentro dos <li> dizem qual caso cada um cobre.
+-->
+<!doctype html>
+<html>
+  <body>
+    <ul class="results__list">
+      <!--
+    CENÁRIO 1 — Card válido, porém mínimo.
+    Tem título + link (obrigatórios), mas:
+    - SEM resumo (p.widget--info__description)
+    - SEM data (span dentro de widget--info__meta)
+    - SEM veículo (widget--info__header)
+
+    Esperado: parser deve criar 1 Resultado com resumo=None,
+    data_publicacao_raw=None, data_publicacao_iso=None, veiculo=None.
+  -->
+      <li class="widget widget--card widget--info" id="search-result-item-1">
+        <div class="widget--info__text-container">
+          <a
+            href="https://measures.globo.com/v1/click?u=https%3A%2F%2Fg1.globo.com%2Fnoticia-valida.ghtml"
+          >
+            <div class="widget--info__title">
+              Notícia válida sem resumo nem data
+            </div>
+          </a>
+        </div>
+      </li>
+
+      <!--
+    CENÁRIO 2 — Card SEM LINK.
+    Tem título visível (texto renderizado), mas nenhum <a href>.
+    No G1 real, isso pode acontecer com conteúdo quebrado ou widget de
+    "veja também" que perdeu o link.
+
+    Esperado: parser deve IGNORAR este card (title sem link = não é resultado).
+  -->
+      <li class="widget widget--card widget--info" id="search-result-item-2">
+        <div class="widget--info__text-container">
+          <div class="widget--info__title">
+            Card sem link — deve ser ignorado
+          </div>
+          <p class="widget--info__description">
+            Este card não tem href em nenhum ancestral.
+          </p>
+        </div>
+      </li>
+
+      <!--
+    CENÁRIO 3 — Card SEM TÍTULO.
+    Tem apenas um link vazio e um resumo. Sem div.widget--info__title,
+    o parser não consegue extrair o campo obrigatório.
+
+    Esperado: parser deve IGNORAR este card (sem título = não é resultado).
+  -->
+      <li class="widget widget--card widget--info" id="search-result-item-3">
+        <div class="widget--info__text-container">
+          <a
+            href="https://measures.globo.com/v1/click?u=https%3A%2F%2Fg1.globo.com%2Fsem-titulo.ghtml"
+          >
+            <p class="widget--info__description">
+              Card sem título — deve ser ignorado.
+            </p>
+          </a>
+        </div>
+      </li>
+
+      <!--
+    CENÁRIO 4 — Card VAZIO.
+    Estrutura mínima sem nenhum campo útil. Testa se o parser não lança
+    exceção ao tentar processar um <li> que não contém nada relevante.
+
+    Esperado: parser deve IGNORAR sem erro.
+  -->
+      <li class="widget widget--card widget--info" id="search-result-item-4">
+        <!-- Intencionalmente vazio -->
+      </li>
+
+      <!--
+    CENÁRIO 5 — Card com link de TRACKING inválido.
+    Tem título, mas o href não segue o padrão do G1 (sem parâmetro u=).
+    Testa se extract_real_url() faz fallback correto quando o parâmetro
+    de URL real não existe.
+
+    Esperado: parser deve usar a URL de tracking como fallback.
+  -->
+      <li class="widget widget--card widget--info" id="search-result-item-5">
+        <div class="widget--info__text-container">
+          <div class="widget--info__header">G1</div>
+          <a href="https://g1.globo.com/url-direta-sem-tracking.ghtml">
+            <div class="widget--info__title">
+              Notícia com URL direta (sem tracking)
+            </div>
+            <p class="widget--info__description">
+              Cobre o fallback de extract_real_url.
+            </p>
+            <div class="widget--info__meta"><span>15/01/2025 10h00</span></div>
+          </a>
+        </div>
+      </li>
+    </ul>
+  </body>
+</html>
