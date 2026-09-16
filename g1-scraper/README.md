@@ -4,7 +4,7 @@ Rotina de web scraping em Python + Beautiful Soup para coletar resultados
 de busca do portal G1, corrigida e instrumentada para o processo seletivo
 do NetLab UFRJ.
 
-**Termo padrão:** `lgpd` — **Fonte:** https://g1.globo.com/busca/?q=lgpd
+**Termo padrão:** `lgpd` — **Fonte:** <https://g1.globo.com/busca/?q=lgpd>
 
 ---
 
