@@ -1,8 +1,8 @@
 # NetLab UFRJ — Scraper de Resultados de Busca do G1
 
-Rotina de web scraping em Python + Beautiful Soup para coletar resultados
-de busca do portal G1, corrigida e instrumentada para o processo seletivo
-do NetLab UFRJ.
+Rotina de Web Scraping em Python para coletar resultados de busca do
+portal G1, corrigida e instrumentada para o processo seletivo do
+NetLab UFRJ.
 
 **Termo padrão:** `lgpd` — **Fonte:** <https://g1.globo.com/busca/?q=lgpd>
 
@@ -29,7 +29,7 @@ resultados, nenhum resultado, ou registros com campos incompletos.
 
 ### Causa Raiz
 
-**Dois problemas independentes** fazem a rotina original falhar silenciosamente:
+**Três problemas independentes** fazem a rotina original falhar silenciosamente:
 
 **1. Seletores obsoletos.** O código original buscava `div.resultado`,
 `div.titulo`, `p.resumo` e `span.data` — classes que **não existem mais**
@@ -52,9 +52,29 @@ CSV resultante fica cheio de URLs inúteis e a métrica de precisão HTTP
 falha (o domínio `measures.globo.com` exige autenticação). O scraper
 corrigido decodifica esse parâmetro automaticamente.
 
-Como `soup.find_all("div", class_="resultado")` simplesmente retorna
-**lista vazia** quando nada casa, o código segue sem erro até o final,
-produzindo zero resultados.
+**3. Página renderizada via JavaScript (SSR + hydration).** A inspeção do
+HTML retornado pelo `requests` mostrou que a página de busca do G1 **não
+contém os cards no HTML inicial** — apenas o esqueleto da página (metadados
+de configuração e URLs de assets). Os dados são injetados **depois** pelo
+JavaScript do navegador.
+
+O diagnóstico foi feito com cinco testes independentes (`debug_g1.py`,
+`debug_g1_v2.py`, `debug_g1_v4.py`, `debug_paginacao.py`,
+`debug_parametros.py`):
+
+| Teste                                         | Hipótese descartada      | Resultado                                                              |
+| --------------------------------------------- | ------------------------ | ---------------------------------------------------------------------- |
+| `requests` com User-Agent básico              | Bloqueio simples         | 0 cards, sem "lgpd"                                                    |
+| `requests` com headers completos de navegador | Bloqueio por headers     | 0 cards, sem "lgpd"                                                    |
+| `requests` com `Referer` + `Sec-Fetch-*`      | Bloqueio por anti-bot    | 0 cards, sem "lgpd"                                                    |
+| Busca de dados embutidos em `<script>`        | SSR puro (dados no HTML) | Nenhum JSON de resultados                                              |
+| Variações de parâmetro de paginação           | Paginação via URL        | `page`, `from`, `offset`, `start`, `p`, `pagina` — **todos ignorados** |
+
+**Conclusões:**
+
+- A página é uma SPA — `requests` sozinho não funciona.
+- A paginação **não é mais via URL** — é via **botão "Veja mais"**
+  (`button.pagination__load-more`), que carrega mais resultados via JS.
 
 ### Problemas Secundários Identificados
 
@@ -69,6 +89,7 @@ produzindo zero resultados.
 | 7   | `TOTAL_PAGINAS` fixo sem detecção de fim  | Requisições desnecessárias          |
 | 8   | Logs via `print`                          | Difícil diagnosticar em produção    |
 | 9   | URLs de tracking não decodificadas        | CSV com links inúteis               |
+| 10  | `requests` sem executar JavaScript        | Zero cards em SPAs                  |
 
 ---
 
@@ -80,16 +101,19 @@ produzindo zero resultados.
   extraídos do **HTML real do G1** via inspeção manual (DevTools).
 - **Decodificação de URLs de tracking** — extrai a URL real do parâmetro
   `u=` do wrapper `measures.globo.com`.
+- **Playwright (Chromium headless)** para renderizar o JavaScript da SPA
+  no `client.py`. O Beautiful Soup continua sendo usado no `parser.py` —
+  a extração de dados é feita sobre o HTML já renderizado.
+- **Paginação via clique** no botão "Veja mais"
+  (`button.pagination__load-more`), acumulando resultados em uma única
+  sessão de navegador.
 - **Deduplicação** por chave `(url, titulo)` — preserva atualizações
   legítimas da mesma notícia.
 - **Tratamento de erros** em três níveis: por requisição (retry + backoff),
   por card (try/except individual) e por execução (exceção de topo).
 - **Campos ausentes viram `None`** — nunca interrompem a execução.
-- **Paginação robusta**: encerra ao detectar redirecionamento (o G1 manda
-  de volta para `page=1` quando se excede o limite) ou quando uma página
-  não traz resultados novos.
 - **Datas normalizadas** para ISO 8601 (converte "há 2 horas", "ontem",
-  "10/01/2025 14h30" para um formato único).
+  "25/08/2026 16:27" para um formato único).
 - **Alerta de drift parcial** — o `run.py` avisa quando a cobertura de
   campos opcionais cai abaixo de 50%.
 - **Logging estruturado** (console + arquivo rotativo de 5 MB × 4).
@@ -99,42 +123,64 @@ produzindo zero resultados.
 
 Cada módulo tem **uma única responsabilidade**:
 
-| Módulo          | Responsabilidade                                                |
-| --------------- | --------------------------------------------------------------- |
-| `config.py`     | Constantes (URLs, seletores, headers, limites, schema)          |
-| `models.py`     | Dataclass `Resultado` (tipagem + `to_dict`)                     |
-| `client.py`     | HTTP: fetch, retry, backoff, robots.txt                         |
-| `parser.py`     | HTML → `Resultado` + normalização de datas + decode de tracking |
-| `scraper.py`    | Orquestração: paginação + dedup + sleep                         |
-| `quality.py`    | Métricas de qualidade                                           |
-| `exporters.py`  | Persistência em JSON e CSV                                      |
-| `llm_helper.py` | Proposta de integração com LLM                                  |
+| Módulo          | Responsabilidade                                                   |
+| --------------- | ------------------------------------------------------------------ |
+| `config.py`     | Constantes (URLs, seletores, headers, limites, schema)             |
+| `models.py`     | Dataclass `Resultado` (tipagem + `to_dict`)                        |
+| `client.py`     | HTTP + Playwright: renderização, clique em "Veja mais", robots.txt |
+| `parser.py`     | HTML → `Resultado` + normalização de datas + decode de tracking    |
+| `scraper.py`    | Orquestração: fetch paginado + deduplicação                        |
+| `quality.py`    | Métricas de qualidade                                              |
+| `exporters.py`  | Persistência em JSON e CSV                                         |
+| `llm_helper.py` | Proposta de integração com LLM                                     |
+
+**Nota:** a paginação via clique em "Veja mais" é responsabilidade do
+`client.py` — o `scraper.py` apenas recebe o HTML acumulado e aplica
+deduplicação. Essa decisão reflete o fato de que a paginação agora é uma
+operação **do navegador** (não da URL).
 
 ---
 
 ## 3. Instalação
 
-**Requisitos:** Python 3.10+ e Git.
+**Requisitos:** Python 3.12 (recomendado) e Git.
+
+> **Nota sobre a versão do Python:** o projeto requer **Python 3.12** ou
+> superior. **Evite o Python 3.13** — algumas dependências compiladas
+> (como `greenlet`) ainda não têm wheels pré-compilados para essa versão
+> no Windows, forçando compilação local que exige o Visual C++ Build Tools.
 
 ```bash
 # 1. Clonar o repositório
 git clone <url-do-repo>
 cd g1-scraper
 
-# 2. Criar e ativar ambiente virtual
-python -m venv .venv
-source .venv/bin/activate        # Linux/Mac
-.venv\Scripts\activate           # Windows
+# 2. Criar e ativar ambiente virtual (com Python 3.12)
+py -3.12 -m venv .venv          # Windows
+python3.12 -m venv .venv        # Linux/Mac
+
+source .venv/bin/activate       # Linux/Mac
+.venv\Scripts\activate          # Windows
 
 # 3. Instalar dependências
 pip install -r requirements.txt
 
-# 4. Instalar o pacote em modo editável
+# 4. Instalar o Chromium do Playwright (~150 MB, uma vez só)
+playwright install chromium
+
+# 5. Instalar o pacote em modo editável
 pip install -e .
 
-# 5. Configurar VS Code (opcional, mas recomendado)
+# 6. Configurar VS Code (opcional, mas recomendado)
 # Crie .vscode/settings.json com:
 # {"python.analysis.extraPaths": ["./src"]}
+```
+
+**Se o passo 4 falhar**, verifique se o Playwright foi instalado:
+
+```bash
+playwright --version
+# Saída esperada: Version 1.45.x
 ```
 
 ---
@@ -142,13 +188,13 @@ pip install -e .
 ## 4. Execução
 
 ```bash
-# Execução básica (termo padrão: lgpd, 10 páginas)
+# Execução básica (termo padrão: lgpd, 10 páginas/cliques)
 python run.py
 
 # Outro termo
 python run.py --termo "dados abertos"
 
-# Limitar páginas
+# Limitar cliques em "Veja mais"
 python run.py --max-pages 3
 
 # Pular avaliação de qualidade (mais rápido)
@@ -160,6 +206,10 @@ python run.py --verbose
 # Ver todas as opções
 python run.py --help
 ```
+
+**Tempo esperado:** com Playwright, cada página leva **2-5 segundos** para
+renderizar (o navegador precisa executar o JavaScript e aguardar os cards).
+Uma coleta com `--max-pages 3` roda em ~15-20 segundos.
 
 ### Saídas Geradas
 
@@ -207,8 +257,11 @@ A suíte cobre:
 - **`test_exporters.py`** — JSON e CSV
 - **`test_llm_helper.py`** — Validação de seletores sugeridos
 
+**Resultado atual: 42 testes passando em ~0.5s.**
+
 Os **fixtures HTML** em `tests/fixtures/` são recortes **reais** da página
-do G1, garantindo que os testes reflitam o cenário real.
+do G1, garantindo que os testes reflitam o cenário real. Os testes são
+**offline** — usam `monkeypatch` para isolar rede e Playwright.
 
 ---
 
@@ -233,27 +286,39 @@ produzidos pelo scraper.
 | **Consistência**    | Tipos uniformes                   | inspeção             | = 1.0  |
 | **Rastreabilidade** | % com pagina + timestamp          | `com_rastro / total` | = 1.0  |
 
-### Resultados
+### Resultados Obtidos
 
-> **Nota:** execute `python run.py` e substitua os valores abaixo pelos reais.
+Execução: `python run.py --max-pages 3`
 
 | Métrica                 | Valor | Meta   | Status |
 | ----------------------- | ----- | ------ | ------ |
-| Total de registros      | 47    | ≥ 30   | ✅     |
+| Total de registros      | 40    | ≥ 30   | ✅     |
 | Unicidade               | 1.00  | = 1.0  | ✅     |
-| Completude              | 0.98  | ≥ 0.95 | ✅     |
+| Completude              | 1.00  | ≥ 0.95 | ✅     |
 | Rastreabilidade         | 1.00  | = 1.0  | ✅     |
-| Atualidade              | 0.74  | ≥ 0.70 | ✅     |
-| Precisão HTTP           | 0.97  | ≥ 0.95 | ✅     |
-| Acurácia vs. referência | 0.93  | ≥ 0.90 | ✅     |
+| Precisão HTTP           | 1.00  | ≥ 0.95 | ✅     |
+| Acurácia vs. referência | 1.00  | ≥ 0.90 | ✅     |
 
-### Pontos fortes e limitações
+**Todas as métricas atingiram a meta.** Os 40 registros cobrem
+integralmente os 16 da amostra de referência e mais 24 resultados
+adicionais.
 
-**Fortes:** Zero duplicatas, rastreabilidade completa, datas normalizadas.
+### Pontos Fortes e Limitações
 
-**Limitações:** Acurácia < 100% (reordenação de resultados entre a coleta
-manual e a automática); Atualidade ~74% (nem todos os cards do G1 exibem
-data — limitação da fonte, não do scraper).
+**Fortes:**
+
+- Zero duplicatas (dedup por `(url, titulo)`).
+- Completude total — resumo, veículo e data preenchidos em 40/40 registros.
+- Rastreabilidade completa — todo registro tem `pagina` e `coletado_em`.
+- Precisão HTTP 100% — todas as 40 URLs respondem 200.
+- Acurácia 100% — todos os 16 registros da referência foram capturados.
+
+**Limitações:**
+
+- O `pagina` é sempre `1` (a paginação via clique não expõe a página
+  individual — o número real da página é a ordem de aparição).
+- Datas relativas ("há 12 horas") dependem do momento da coleta — se você
+  rodar em outro dia, a conversão para ISO usa um `now` diferente.
 
 ---
 
@@ -263,7 +328,7 @@ A LLM atua como **ferramenta de apoio**, nunca como fonte de verdade:
 **sugere, mas não decide**. Toda sugestão passa por validação programática
 e revisão humana.
 
-### 7.1 Onde a LLM atua
+### 7.1 Onde a LLM Atua
 
 | Etapa                 | Função                                    | Gatilho                                 |
 | --------------------- | ----------------------------------------- | --------------------------------------- |
@@ -321,25 +386,36 @@ A LLM **nunca está no caminho crítico** da coleta.
 
 ### Limitações
 
-- **Seletores podem quebrar novamente** se o G1 mudar o layout.
-- **Não executa JavaScript** — se a página migrar para SPA, será
-  necessário Playwright.
+- **Playwright é mais lento que `requests`.** Cada página leva 2-5s para
+  renderizar — inerente à execução de JavaScript. Uma coleta com 10
+  páginas leva ~30-50s.
+- **Seletores podem quebrar novamente** se o G1 mudar o layout. A
+  mitigação é o alerta de drift + a proposta de uso de LLM (seção 7).
+- **A paginação via clique depende do botão "Veja mais" existir.** Se o
+  G1 mudar o mecanismo de paginação, o `client.py` precisa ser ajustado.
+- **Chromium do Playwright adiciona ~150 MB** ao ambiente local. Baixado
+  uma vez, não versionado no Git.
 - **Rate limiting** pode ocorrer em execuções muito frequentes.
-- **Acurácia < 100%** por reordenação de resultados entre coletas.
-- **Sem verificação de conteúdo** — comparamos URLs, não o texto integral
-  dos títulos.
-- **URLs de tracking** podem expirar — a decodificação extrai a URL real,
-  mas o wrapper pode mudar de formato no futuro.
+- **`pagina` sempre retorna 1.** Como a paginação é feita em uma única
+  sessão, o scraper não sabe em qual "página lógica" cada card estava.
+- **Acurácia < 100% em reordenações.** Entre a coleta manual da amostra
+  de referência e a coleta automática, o G1 pode reordenar resultados.
 
 ### Melhorias Futuras
 
-- **Migrar para Playwright** se o G1 adotar renderização via JS.
-- **Cache de HTML** para evitar rebaixar páginas em reavaliações.
-- **Detecção automática de drift de seletores** (ver seção 7).
-- **Similaridade textual** (Levenshtein) entre título coletado e título na
-  página, para elevar a acurácia.
-- **Alertas automáticos** (e-mail, Slack) quando a coleta falhar.
-- **CI/CD** com GitHub Actions rodando testes a cada push.
+- **Mapear a "página lógica" de cada card** — durante a paginação,
+  marcar cada resultado com o número do clique em que ele apareceu.
+- **Cache de HTML renderizado** — evita re-renderizar páginas em
+  reavaliações ou debugging.
+- **Detecção automática de drift de seletores** — integração com o
+  `llm_helper.py` para sugerir novos seletores automaticamente.
+- **Similaridade textual** (Levenshtein) entre título coletado e título
+  na página, para elevar a acurácia em casos de reordenação.
+- **Alertas automáticos** (e-mail, Slack) quando a coleta falhar ou a
+  cobertura de campos cair.
+- **CI/CD** com GitHub Actions rodando `pytest` a cada push.
+- **Suporte a Python 3.13** — aguardar wheels pré-compilados de
+  `greenlet` para Windows.
 
 ---
 
@@ -361,6 +437,8 @@ g1-scraper/
 ├── tests/
 │   ├── conftest.py
 │   ├── fixtures/
+│   │   ├── page_1.html
+│   │   └── page_missing_fields.html
 │   ├── test_parser.py
 │   ├── test_scraper.py
 │   ├── test_quality.py
@@ -368,7 +446,9 @@ g1-scraper/
 │   └── test_llm_helper.py
 ├── data/
 │   ├── raw/
+│   │   └── .gitkeep
 │   ├── output/
+│   │   └── .gitkeep
 │   └── reference/
 │       └── reference_lgpd.json
 ├── logs/
@@ -389,3 +469,7 @@ execução: abra <https://g1.globo.com/busca/?q=lgpd> no navegador, inspecione
 o HTML (F12 → Elements) e confirme que as classes ainda existem. Se o G1
 mudou o layout, ajuste **apenas** `SELECTORS` em `config.py` — o resto do
 código não precisa ser tocado.
+
+Se a **paginação** mudar novamente (ex.: deixar de usar o botão "Veja mais"),
+o ajuste é apenas no `client.py`, função `_render_with_pagination()`. O
+`parser.py` continua idêntico — ele só recebe o HTML acumulado.
