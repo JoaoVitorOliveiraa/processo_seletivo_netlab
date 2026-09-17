@@ -1,0 +1,39 @@
+﻿# Ambientes virtuais (em qualquer nível)
+.venv/
+venv/
+**/.venv/
+**/venv/
+
+# Bytecode Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDEs
+.vscode/
+.idea/
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+
+# Scripts de debug na raiz
+debug_*.py
+debug_*.html
+verifica*.py
+
+# Dados gerados
+**/data/output/*
+**/data/raw/*
+**/logs/*.log
+**/logs/*.log.*
+
+# Preserva .gitkeep
+!**/data/output/.gitkeep
+!**/data/raw/.gitkeep
+!**/logs/.gitkeep
