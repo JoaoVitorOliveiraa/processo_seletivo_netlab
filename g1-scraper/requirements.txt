@@ -8,7 +8,7 @@ beautifulsoup4>=4.12.0  # Biblioteca que navega e extrai dados da árvore HTML
 soupsieve>=2.5          # Biblioteca que dá suporte a seletores CSS dentro do BeautifulSoup
 
 # Renderização de páginas com JavaScript (usado em client.py)
-playwright>=1.40.0
+playwright>=1.45.0
 greenlet>=3.1.0
 
 # Testes
