@@ -148,35 +148,95 @@ operação **do navegador** (não da URL).
 > **Nota sobre a versão do Python:** o projeto requer **Python 3.12** ou
 > superior. **Evite o Python 3.13** — algumas dependências compiladas
 > (como `greenlet`) ainda não têm wheels pré-compilados para essa versão
-> no Windows, forçando compilação local que exige o Visual C++ Build Tools.
+> no Windows, forçando compilação local que exige o Visual C++ Build Tools
+> e falha se ele não estiver instalado. Você pode confirmar quais versões
+> do Python estão instaladas com `py -0` (Windows).
+>
+> **Importante:** o `.venv` deve ser criado **na raiz do projeto** (mesma
+> pasta que contém `pyproject.toml`, `run.py` e `src/`). Criar o `.venv`
+> em uma pasta pai causa `ModuleNotFoundError` porque o pacote não fica
+> registrado no ambiente correto.
 
 ```bash
 # 1. Clonar o repositório
 git clone <url-do-repo>
 cd g1-scraper
 
-# 2. Criar e ativar ambiente virtual (com Python 3.12)
+# 2. Criar ambiente virtual com Python 3.12
 py -3.12 -m venv .venv          # Windows
 python3.12 -m venv .venv        # Linux/Mac
 
+# 3. Ativar o ambiente virtual
 source .venv/bin/activate       # Linux/Mac
 .venv\Scripts\activate          # Windows
+```
 
-# 3. Instalar dependências
+**⚠️ Verificação obrigatória:** confirme que o venv está usando o
+**Python 3.12** antes de prosseguir:
+
+```bash
+python --version
+# Saída esperada: Python 3.12.8
+```
+
+Se aparecer `Python 3.13.x`, o venv foi criado com a versão errada.
+Apague-o (`Remove-Item -Recurse -Force .venv` no Windows ou
+`rm -rf .venv` no Linux/Mac) e recrie com `py -3.12 -m venv .venv`.
+
+```bash
+# 4. Instalar dependências
 pip install -r requirements.txt
 
-# 4. Instalar o Chromium do Playwright (~150 MB, uma vez só)
+# 5. Instalar o Chromium do Playwright (~150 MB, uma vez só)
 playwright install chromium
 
-# 5. Instalar o pacote em modo editável
+# 6. Instalar o pacote em modo editável
 pip install -e .
 
-# 6. Configurar VS Code (opcional, mas recomendado)
+# 7. Configurar VS Code (opcional, mas recomendado)
 # Crie .vscode/settings.json com:
 # {"python.analysis.extraPaths": ["./src"]}
 ```
 
-**Se o passo 4 falhar**, verifique se o Playwright foi instalado:
+### Troubleshooting
+
+**`ModuleNotFoundError: No module named 'g1_scraper'`**
+
+Falta rodar `pip install -e .` no `.venv` ativo. O comando registra o
+pacote no venv — permitindo importá-lo de qualquer lugar. Confirme com:
+
+```bash
+pip list | grep g1-scraper
+# Saída esperada: g1-scraper 0.1.0 /caminho/para/g1-scraper/src
+```
+
+**`ModuleNotFoundError: No module named 'greenlet._greenlet'`**
+
+O `.venv` foi criado com Python 3.13 (muito recente — sem wheels
+pré-compilados para `greenlet` no Windows). Confirme com
+`python --version` — se aparecer `3.13.x`, recrie o venv com
+`py -3.12 -m venv .venv`.
+
+**`Error: Microsoft Visual C++ 14.0 or greater is required`**
+
+O pip tentou compilar o `greenlet` do source. Confirme a versão do
+Python (`python --version` deve ser `3.12.x`). Se for 3.13, recrie o
+`.venv` com Python 3.12.
+
+**`playwright._impl._api_types.Error: Executable doesn't exist`**
+
+O Chromium não foi baixado. Rode:
+
+```bash
+playwright install chromium
+```
+
+**`SyntaxError` ao rodar comandos `python -c "..."` com aspas**
+
+O terminal (especialmente PowerShell) tem dificuldade com aspas aninhadas.
+Prefira criar um arquivo `.py` e rodá-lo, em vez de usar `python -c "..."`.
+
+**Se o passo 5 falhar**, verifique se o Playwright foi instalado:
 
 ```bash
 playwright --version
